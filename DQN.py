@@ -20,11 +20,13 @@ import codecs
 
 import random
 
-from keras.layers import Conv2D, Dense, Flatten, ConvLSTM2D, Input, Activation
+from keras.layers import Conv2D, Dense, Flatten, ConvLSTM2D, Input, Activation, BatchNormalization, Dropout
 from keras.models import Model
 from collections import deque
 from keras.models import load_model
 from keras.optimizers import Adam, RMSprop
+
+from keras import regularizers
 
 class Policy(object):
     """
@@ -65,12 +67,15 @@ class EpsilonGreedyDecayPolicy(Policy):
         self.annealing_steps = annealing_steps
         self.current_step = current_step
 
+        self.state = (-1,-1)
+
     def __str__(self):
-        return "dec.eps. policy: eps={0:.4f}".format(self.epsilon)
+        return "dec.eps. policy: eps={0:.4f}, la: {1}".format(self.epsilon, self.state)
 
     def choose(self, agent):
         if np.random.rand() < self.epsilon:
             choice = np.random.choice(agent.action_space.n)
+            self.state = (0, choice)
         else:
             action_values = agent.evaluate_actions()
             choice = np.argmax(action_values)
@@ -79,6 +84,8 @@ class EpsilonGreedyDecayPolicy(Policy):
 
             if len(max_choices) > 1:
                 choice = np.random.choice(max_choices)
+
+            self.state = (1, choice)
 
         if self.current_step < self.annealing_steps:
             self.epsilon -= (self.initial_epsilon - self.final_epsilon)/self.annealing_steps
@@ -136,10 +143,14 @@ class Agent(object):
         x = Activation("relu")(x)
         x = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding='same')(x)
         """
-        x = Conv2D(filters=16, kernel_size=(8, 8), strides=(4, 4), padding='same')(input_layer)
+        x = Conv2D(filters=16, kernel_size=(8, 8), strides=(4, 4), padding='same', kernel_regularizer=regularizers.l2(0.01))(input_layer)
+        x = BatchNormalization()(x)
         x = Activation("relu")(x)
-        x = Conv2D(filters=32, kernel_size=(4, 4), strides=(2, 2), padding='same')(x)
+        x = Dropout(0.1)(x)
+        x = Conv2D(filters=32, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_regularizer=regularizers.l2(0.01))(x)
+        x = BatchNormalization()(x)
         x = Activation("relu")(x)
+        x = Dropout(0.1)(x)
         x = Flatten()(x)
         x = Dense(256)(x)
         x = Activation("relu")(x)
@@ -172,8 +183,8 @@ class Agent(object):
 
     def idle_observe(self):
         for t in range(self.observation_time):
-            if t%100==0:
-                print(t/self.observation_time)
+            if t%500==0:
+                print("\r{0:.1f}%".format(t/self.observation_time*100), end="")
 
             _, reward, done = self.observe(self.idle_action)
 
@@ -194,7 +205,7 @@ class Agent(object):
         return self.policy.choose(self)
 
     def print_status(self):
-        print("{0} \t L={1} \t CumL={2}".format(self.policy, self.loss, self.cumloss))
+        print("{0} \t L={1:8f} \t CumL={2:8f}".format(self.policy, self.loss, self.cumloss))
 
     def build_state(self):
         state = np.empty((self.image_rows, self.image_columns, self.nb_frames))
@@ -279,8 +290,8 @@ def main():
         print("model loaded.")
 
     #policy=EpsilonGreedyPolicy(epsilon=0.1),
-    agent = Agent(env, nb_frames=agent_nb_frames,
-                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=0.2, final_epsilon=0.05, annealing_steps=10000, current_step=0),
+    agent = Agent(env, nb_frames=agent_nb_frames, batch_size=64,
+                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.1, annealing_steps=10000, current_step=0),
                   #policy=EpsilonGreedyDecayPolicy(initial_epsilon=0.05, final_epsilon=0.05, annealing_steps=1000, current_step=1000),
                   buffer_capacity=1000000, observation_time=10000, gamma=0.99, model=model, idle_action=1)
 
@@ -296,7 +307,7 @@ def main():
             env.render()
             agent.step()
 
-            if agent.time % 10 == 0:
+            if agent.time % agent_nb_frames == 0:
                 print(n, end="\t")
                 agent.print_status()
 
