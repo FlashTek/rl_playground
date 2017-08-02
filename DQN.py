@@ -27,6 +27,7 @@ from keras.models import load_model
 from keras.optimizers import Adam, RMSprop
 
 from keras import regularizers
+import keras.backend as K
 
 class Policy(object):
     """
@@ -101,6 +102,29 @@ class GreedyPolicy(EpsilonGreedyPolicy):
     def __str__(self):
         return "greedy policy"
 
+class Memory(object):
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.data = [None for i in range(capacity)]
+        self.position = 0
+        self.length = 0
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, key):
+        return [self.data[item] for item in key]
+
+    def __setitem(self, key, value):
+        raise NotImplemented("Setting items by index is not allowed.")
+
+    def append(self, x):
+        if self.length < self.capacity:
+            self.length += 1
+
+        self.data[self.position] = x
+        self.position = (self.position+1) % self.capacity
+
 class Agent(object):
     def __init__(self, environment, nb_frames=1, policy=GreedyPolicy(), model=None, buffer_capacity=100,
                  idle_action=1, batch_size=32, gamma=1.0, observation_time=50000):
@@ -116,10 +140,8 @@ class Agent(object):
         self.policy = policy
         self.observation = self.environment.reset()
 
-        self.frame_buffer = deque()
-        self.D = deque()
-
-        self.frame_buffer_capacity = buffer_capacity
+        self.last_frames = np.empty((self.image_rows, self.image_columns, nb_frames))
+        self.D = Memory(capacity=buffer_capacity)
 
         if model is None:
             model = self.build_model()
@@ -135,6 +157,11 @@ class Agent(object):
         self.reset()
 
     def build_model(self):
+        def huber(y_true, y_pred):
+            error = y_true-y_pred
+            return K.mean(K.sqrt(error + 1.0) - 1.0, axis=-1)
+
+
         input_layer = Input(shape=(self.image_rows, self.image_columns, self.nb_frames))
         """
         x = Conv2D(filters=32, kernel_size=(8, 8), strides=(4, 4), padding='same')(input_layer)
@@ -143,31 +170,35 @@ class Agent(object):
         x = Activation("relu")(x)
         x = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding='same')(x)
         """
-        x = Conv2D(filters=16, kernel_size=(8, 8), strides=(4, 4), padding='same', kernel_regularizer=regularizers.l2(0.01))(input_layer)
-        x = BatchNormalization()(x)
+        x = Conv2D(filters=32, kernel_size=(8, 8), strides=(4, 4), padding='same', kernel_regularizer=regularizers.l2(0.01))(input_layer)
+        #x = BatchNormalization()(x)
         x = Activation("relu")(x)
-        x = Dropout(0.1)(x)
-        x = Conv2D(filters=32, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_regularizer=regularizers.l2(0.01))(x)
-        x = BatchNormalization()(x)
+        #x = Dropout(0.1)(x)
+        x = Conv2D(filters=64, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_regularizer=regularizers.l2(0.01))(x)
+        #x = BatchNormalization()(x)
         x = Activation("relu")(x)
-        x = Dropout(0.1)(x)
+        x = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding='same', kernel_regularizer=regularizers.l2(0.01))(x)
+        #x = BatchNormalization()(x)
+        x = Activation("relu")(x)
+        #x = Dropout(0.1)(x)
         x = Flatten()(x)
-        x = Dense(256)(x)
+        x = Dense(512)(x)
         x = Activation("relu")(x)
-        x = Dense(self.action_space.n)(x)
+        x = Dense(self.action_space.n, activation="linear")(x)
 
         model = Model(inputs=[input_layer], outputs=[x])
         #model.compile(optimizer="adam", loss="mse")
-        opt = RMSprop(lr=0.00025, epsilon=0.01)
-        model.compile(optimizer=opt, loss="mse")
+        opt = RMSprop()#lr=0.00025, epsilon=0.01)
+        model.compile(optimizer=opt, loss=huber)
 
         return model
 
     def observe(self, action):
         observation, reward, done, _ = self.environment.step(action)
-        observation = (resize(rgb2gray(observation), (self.image_rows, self.image_columns), mode="constant")  - 127.0)/127.0
+        observation = ((resize(rgb2gray(observation), (self.image_rows, self.image_columns), mode="constant"))-0.5)*2.0
         self.observation = observation
-        self.frame_buffer.append(self.observation)
+        self.last_frames[:, :, 0:3] = self.last_frames[:, :, 1:]
+        self.last_frames[:, :, 3] = self.observation
 
         return observation, reward, done
 
@@ -176,10 +207,7 @@ class Agent(object):
         self._done = False
         self.loss = 0
         self.cumloss = 0
-        self.state = None
-
-        if len(self.frame_buffer) > 0:
-            self.state = self.build_state()
+        self.state = self.last_frames.copy()
 
     def idle_observe(self):
         for t in range(self.observation_time):
@@ -190,7 +218,7 @@ class Agent(object):
 
             if t == self.nb_frames:
                 self.state = self.build_state()
-            if t > self.nb_frames:
+            elif t > self.nb_frames:
                 if t % self.nb_frames == 0:
                     old_state = self.state.copy()
                     self.state = self.build_state()
@@ -200,6 +228,7 @@ class Agent(object):
                 self.environment.reset()
 
         self.state = self.build_state()
+        print(self.state)
 
     def choose_action(self):
         return self.policy.choose(self)
@@ -208,12 +237,7 @@ class Agent(object):
         print("{0} \t L={1:8f} \t CumL={2:8f}".format(self.policy, self.loss, self.cumloss))
 
     def build_state(self):
-        state = np.empty((self.image_rows, self.image_columns, self.nb_frames))
-
-        for i in range(self.nb_frames):
-            state[:, :, i] = self.frame_buffer[-i]
-
-        return state
+        return self.last_frames.copy()
 
     #@profile
     def step(self):
@@ -227,7 +251,7 @@ class Agent(object):
         self.D.append([old_state, self.action, reward, self.state, done])
 
         if len(self.D) > self.batch_size:
-            minibatch = random.sample(self.D, self.batch_size)
+            minibatch = self.D[random.sample(range(len(self.D)), self.batch_size)]
 
             states = np.empty((self.batch_size, self.image_rows, self.image_columns, self.nb_frames))
             new_states = np.empty((self.batch_size, self.image_rows, self.image_columns, self.nb_frames))
@@ -239,24 +263,13 @@ class Agent(object):
             for i in range(self.batch_size):
                 states[i], actions[i], rewards[i], new_states[i], terminals[i] = minibatch[i]
 
-            #targets = self.model.predict(states)
             Q_sa = self.model.predict(new_states)
 
+            targets = self.model.predict(states)
             targets[np.arange(self.batch_size), actions] = rewards + (1-terminals)*self.gamma*np.max(Q_sa, axis=1)
 
-            """
-            for i in range(self.batch_size):
-                if terminals[i]:
-                    targets[i, actions[i]] = rewards[i]
-                else:
-                    targets[i, actions[i]] = rewards[i] + self.gamma*np.max(Q_sa[i])
-            """
             self.loss = self.model.train_on_batch(states, targets)
             self.cumloss += self.loss
-
-        if len(self.frame_buffer) > self.frame_buffer_capacity:
-            self.frame_buffer.popleft()
-            self.D.popleft()
 
         self._done = done
         self._time += 1
@@ -290,14 +303,14 @@ def main():
         print("model loaded.")
 
     #policy=EpsilonGreedyPolicy(epsilon=0.1),
-    agent = Agent(env, nb_frames=agent_nb_frames, batch_size=64,
-                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.1, annealing_steps=10000, current_step=0),
+    agent = Agent(env, nb_frames=agent_nb_frames, batch_size=32,
+                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.10, annealing_steps=1000, current_step=0),
                   #policy=EpsilonGreedyDecayPolicy(initial_epsilon=0.05, final_epsilon=0.05, annealing_steps=1000, current_step=1000),
-                  buffer_capacity=1000000, observation_time=10000, gamma=0.99, model=model, idle_action=1)
+                  buffer_capacity=1000000, observation_time=10000, gamma=0.99, model=model, idle_action=0)
 
     print("starting idle observation...")
     agent.idle_observe()
-    print("finished idle observation of {0} steps.".format(len(agent.frame_buffer)))
+    print("finished idle observation.")
 
     for n in range(nb_episodes):
         env.reset()

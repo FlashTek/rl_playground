@@ -1,0 +1,13 @@
+---
+
+- step:
+    name: tensorflow-check
+    image: valohai/keras:2.0.0-tensorflow1.0.1-python3.6-cuda8.0-cudnn5-devel-ubuntu16.04
+    command:
+      - pwd
+      - python --version
+      - python -c "import keras; print('keras version is %s' % keras.__version__);"
+      - python -c "import tensorflow; print('tensorflow version is %s' % tensorflow.__version__);"
+      - python -c "from tensorflow.python.client import device_lib; device_lib.list_local_devices();"
+      - nvcc --version | grep release
+      - cat /proc/driver/nvidia/version
