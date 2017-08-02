@@ -159,7 +159,7 @@ class Agent(object):
     def build_model(self):
         def huber(y_true, y_pred):
             error = y_true-y_pred
-            return K.mean(K.sqrt(error + 1.0) - 1.0, axis=-1)
+            return K.mean(K.sqrt(K.square(error) + 1.0) - 1.0, axis=-1)
 
 
         input_layer = Input(shape=(self.image_rows, self.image_columns, self.nb_frames))
