@@ -172,14 +172,14 @@ class Agent(object):
         x = Activation("relu")(x)
         x = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding='same')(x)
         """
-        x = Conv2D(filters=32, kernel_size=(8, 8), strides=(4, 4), padding='same', kernel_regularizer=regularizers.l2(0.01))(input_layer)
+        x = Conv2D(filters=32, kernel_size=(8, 8), strides=(4, 4), padding='same')(input_layer) #, kernel_regularizer=regularizers.l2(0.01)
         #x = BatchNormalization()(x)
         x = Activation("relu")(x)
         #x = Dropout(0.1)(x)
-        x = Conv2D(filters=64, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_regularizer=regularizers.l2(0.01))(x)
+        x = Conv2D(filters=64, kernel_size=(4, 4), strides=(2, 2), padding='same')(x)
         #x = BatchNormalization()(x)
         x = Activation("relu")(x)
-        x = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding='same', kernel_regularizer=regularizers.l2(0.01))(x)
+        x = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding='same')(x)
         #x = BatchNormalization()(x)
         x = Activation("relu")(x)
         #x = Dropout(0.1)(x)
@@ -190,7 +190,7 @@ class Agent(object):
 
         model = Model(inputs=[input_layer], outputs=[x])
         #model.compile(optimizer="adam", loss="mse")
-        opt = RMSprop()#lr=0.00025, epsilon=0.01)
+        opt = Adam(lr=0.00025)#RMSprop()#lr=0.00025, epsilon=0.01)
         model.compile(optimizer=opt, loss=huber)
 
         return model
@@ -199,7 +199,7 @@ class Agent(object):
         observation, reward, done, _ = self.environment.step(action)
         observation = ((resize(rgb2gray(observation), (self.image_rows, self.image_columns), mode="constant"))-0.5)*2.0
         self.observation = observation
-        self.last_frames[:, :, 0:3] = self.last_frames[:, :, 1:]
+        self.last_frames[:, :, :3] = self.last_frames[:, :, 1:]
         self.last_frames[:, :, 3] = self.observation
 
         return observation, reward, done
@@ -210,6 +210,7 @@ class Agent(object):
         self.loss = 0
         self.cumloss = 0
         self.state = self.last_frames.copy()
+        self.cumreward = 0
 
     def idle_observe(self):
         for t in range(self.observation_time):
@@ -236,7 +237,7 @@ class Agent(object):
         return self.policy.choose(self)
 
     def print_status(self):
-        print("{0} \t L={1:8f} \t CumL={2:8f}".format(self.policy, self.loss, self.cumloss))
+        print("{0} \t R={0} \t L={1:8f} \t CumL={2:8f}".format(self.policy, self.cumreward, self.loss, self.cumloss))
 
     def build_state(self):
         return self.last_frames.copy()
@@ -249,6 +250,8 @@ class Agent(object):
         old_state = self.state.copy()
 
         _, reward, done = self.observe(self.action)
+
+        self.cumreward += reward
 
         self.D.append([old_state, self.action, reward, self.state, done])
 
@@ -304,7 +307,7 @@ def main():
     """
 
     env_name = "Breakout-v0"
-    nb_episodes = 100
+    nb_episodes = 200
 
     agent_nb_frames = 4
 
@@ -318,9 +321,9 @@ def main():
 
     #policy=EpsilonGreedyPolicy(epsilon=0.1),
     agent = Agent(env, nb_frames=agent_nb_frames, batch_size=32,
-                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.10, annealing_steps=5000, current_step=000),
+                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.10, annealing_steps=5000, current_step=1),
                   #policy=EpsilonGreedyDecayPolicy(initial_epsilon=0.05, final_epsilon=0.05, annealing_steps=1000, current_step=1000),
-                  buffer_capacity=10000, observation_time=4, gamma=0.99, model=model, idle_action=0)
+                  buffer_capacity=10000, observation_time=10000, gamma=0.99, model=model, idle_action=0)
 
     print("starting idle observation...")
     agent.idle_observe()
