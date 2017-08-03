@@ -125,6 +125,10 @@ class Memory(object):
         self.data[self.position] = x
         self.position = (self.position+1) % self.capacity
 
+def huber(y_true, y_pred):
+    error = y_true-y_pred
+    return K.mean(K.sqrt(K.square(error) + 1.0) - 1.0, axis=-1)
+
 class Agent(object):
     def __init__(self, environment, nb_frames=1, policy=GreedyPolicy(), model=None, buffer_capacity=100,
                  idle_action=1, batch_size=32, gamma=1.0, observation_time=50000):
@@ -157,9 +161,7 @@ class Agent(object):
         self.reset()
 
     def build_model(self):
-        def huber(y_true, y_pred):
-            error = y_true-y_pred
-            return K.mean(K.sqrt(K.square(error) + 1.0) - 1.0, axis=-1)
+
 
 
         input_layer = Input(shape=(self.image_rows, self.image_columns, self.nb_frames))
@@ -289,8 +291,20 @@ class Agent(object):
 
 
 def main():
+    """
+    import glob
+    import h5py
+
+    model_files = sorted(glob.glob('*.h5'))
+    for model_file in model_files:
+        print("Update '{}'".format(model_file))
+        with h5py.File(model_file, 'a') as f:
+            if 'optimizer_weights' in f.keys():
+                del f['optimizer_weights']
+    """
+
     env_name = "Breakout-v0"
-    nb_episodes = 500
+    nb_episodes = 100
 
     agent_nb_frames = 4
 
@@ -299,14 +313,14 @@ def main():
 
     model = None
     if os.path.isfile("DQN_model.h5"):
-        model = load_model("DQN_model.h5")
+        model = load_model("DQN_model.h5", custom_objects={"huber": huber})
         print("model loaded.")
 
     #policy=EpsilonGreedyPolicy(epsilon=0.1),
     agent = Agent(env, nb_frames=agent_nb_frames, batch_size=32,
-                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.10, annealing_steps=1000, current_step=0),
+                  policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.10, annealing_steps=5000, current_step=000),
                   #policy=EpsilonGreedyDecayPolicy(initial_epsilon=0.05, final_epsilon=0.05, annealing_steps=1000, current_step=1000),
-                  buffer_capacity=1000000, observation_time=10000, gamma=0.99, model=model, idle_action=0)
+                  buffer_capacity=10000, observation_time=4, gamma=0.99, model=model, idle_action=0)
 
     print("starting idle observation...")
     agent.idle_observe()
