@@ -75,7 +75,7 @@ class EpsilonGreedyDecayPolicy(Policy):
 
     def choose(self, agent):
         if np.random.rand() < self.epsilon:
-            choice = np.random.choice(agent.action_space.n)
+            choice = np.random.randint(0, agent.action_space.n)
             self.state = (0, choice)
         else:
             action_values = agent.evaluate_actions()
@@ -130,8 +130,8 @@ def huber(y_true, y_pred):
     return K.mean(K.sqrt(K.square(error) + 1.0) - 1.0, axis=-1)
 
 class Agent(object):
-    def __init__(self, environment, nb_frames=1, policy=GreedyPolicy(), model=None, buffer_capacity=100,
-                 idle_action=1, batch_size=32, gamma=1.0, observation_time=50000):
+    def __init__(self, environment, nb_frames=1, policy=GreedyPolicy(), Q_model=None, P_model=None, buffer_capacity=100,
+                 idle_action=1, batch_size=32, gamma=1.0, observation_time=50000, P_update_interval=1000):
         self.environment = environment
         self.nb_frames = nb_frames
         self.action_space = self.environment.action_space
@@ -147,9 +147,15 @@ class Agent(object):
         self.last_frames = np.empty((self.image_rows, self.image_columns, nb_frames))
         self.D = Memory(capacity=buffer_capacity)
 
-        if model is None:
-            model = self.build_model()
-        self.model = model
+        if Q_model is None:
+            Q_model = self.build_model()
+        if P_model is None:
+            P_model = self.build_model()
+
+        self.Q_model = Q_model
+        self.P_model = P_model
+
+        self.P_update_interval = P_update_interval
 
         self.idle_action = idle_action
         self.batch_size = batch_size
@@ -158,12 +164,11 @@ class Agent(object):
 
         self.action = self.idle_action
 
+        self._total_time = 0
+
         self.reset()
 
     def build_model(self):
-
-
-
         input_layer = Input(shape=(self.image_rows, self.image_columns, self.nb_frames))
         """
         x = Conv2D(filters=32, kernel_size=(8, 8), strides=(4, 4), padding='same')(input_layer)
@@ -231,7 +236,6 @@ class Agent(object):
                 self.environment.reset()
 
         self.state = self.build_state()
-        print(self.state)
 
     def choose_action(self):
         return self.policy.choose(self)
@@ -268,13 +272,16 @@ class Agent(object):
             for i in range(self.batch_size):
                 states[i], actions[i], rewards[i], new_states[i], terminals[i] = minibatch[i]
 
-            Q_sa = self.model.predict(new_states)
+            Q_pred = self.P_model.predict(new_states)
 
-            targets = self.model.predict(states)
-            targets[np.arange(self.batch_size), actions] = rewards + (1-terminals)*self.gamma*np.max(Q_sa, axis=1)
+            targets = self.Q_model.predict(states)
+            targets[np.arange(self.batch_size), actions] = rewards + (1-terminals)*self.gamma*np.max(Q_pred, axis=1)
 
-            self.loss = self.model.train_on_batch(states, targets)
+            self.loss = self.Q_model.train_on_batch(states, targets)
             self.cumloss += self.loss
+
+        if self._total_time % self.P_update_interval == 0:
+            [self.P_model.trainable_weights[i].assign(self.Q_model.trainable_weights[i]) for i in range(len(self.Q_model.trainable_weights))]
 
         self._done = done
         self._time += 1
@@ -282,7 +289,7 @@ class Agent(object):
     def evaluate_actions(self):
         self.state = self.build_state()
 
-        return self.model.predict(np.array([self.state]))[0]
+        return self.Q_model.predict(np.array([self.state]))[0]
 
     @property
     def time(self):
@@ -306,7 +313,7 @@ def main():
                 del f['optimizer_weights']
     """
 
-    env_name = "Breakout-v0"
+    env_name = "SpaceInvaders-v0"
     nb_episodes = 200
 
     agent_nb_frames = 4
@@ -323,7 +330,7 @@ def main():
     agent = Agent(env, nb_frames=agent_nb_frames, batch_size=32,
                   policy=EpsilonGreedyDecayPolicy(initial_epsilon=1.0, final_epsilon=0.10, annealing_steps=5000, current_step=1),
                   #policy=EpsilonGreedyDecayPolicy(initial_epsilon=0.05, final_epsilon=0.05, annealing_steps=1000, current_step=1000),
-                  buffer_capacity=10000, observation_time=10000, gamma=0.99, model=model, idle_action=0)
+                  buffer_capacity=50000, observation_time=10000, gamma=0.99, Q_model=model, P_model=model, idle_action=0)
 
     print("starting idle observation...")
     agent.idle_observe()
